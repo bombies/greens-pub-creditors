@@ -161,11 +161,6 @@ def crunch_raw_data(database):
     print("Crunching raw data...")
 
     # Parse entries into an abstract Creditor type
-    # The first line follows the format: Order #: <Int> <mm/dd/yyyy> <Time>
-    # The second line follows the format: Take Out $<Amount Credited>
-    # The third lines follows the format: "Employee: <Cashier>"
-    # Each line should be stripped before attempting to parse
-    # The creditor name will be retrieved from the sqlite3 database passed.
     database_cursor = database.cursor()
     all_open_orders = database_cursor.execute(
         "SELECT OrderID, SpecificCustomerName, AmountDue, EmployeeID, OrderDateTime, OrderStatus FROM OrderHeaders where OrderStatus = 1"
