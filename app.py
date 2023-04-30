@@ -1,3 +1,4 @@
+import datetime
 import os
 import sys
 import sqlite3
@@ -60,7 +61,7 @@ class Process:
         crunch_raw_data(database)
         self.__progress(25)
 
-        create_excel_spreadsheet()
+        create_excel_spreadsheet(os.path.dirname(self._file.name))
         self.__progress(25)
 
     def start(self):
@@ -192,12 +193,12 @@ def crunch_raw_data(database):
 
 
 # This function turns the Creditor abstract type into a
-# excel spreadsheet using openpyxl. The spreadsheet will
+# Excel spreadsheet using openpyxl. The spreadsheet will
 # contain the OrderID, Creditor Name, Amount Credited, and
 # Cashier as columns.
-def create_excel_spreadsheet():
+def create_excel_spreadsheet(path=""):
     print("Creating excel spreadsheet...")
-    spreadsheet_name = "creditors.xlsx"
+    spreadsheet_name = f"{path}/creditors-{datetime.datetime.now().strftime('%d-%m-%Y')}.xlsx"
 
     # Create workbook if creditors.xlsx does not exist,
     # if it does, the file will just be overwritten.
