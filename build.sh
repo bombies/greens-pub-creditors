@@ -1,0 +1,1 @@
+python -m PyInstaller --onefile --windowed --name=Quick-Open-Order-Report app.py
