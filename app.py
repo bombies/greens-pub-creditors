@@ -99,10 +99,12 @@ def mdb_to_sqlite(mdb_file):
         columns = []
 
         def populate_columns():
-            for row in cursor.columns(table=t.name):
-                print('    {} [{}({})]'.format(row.column_name, row.type_name, row.column_size))
-                col_name = re.sub('[^a-zA-Z0-9]', '_', row.column_name)
-                columns.append('{} {}({})'.format(col_name, row.type_name, row.column_size))
+            for cursor_row in cursor.columns(table=t.name):
+                print('    {} [{}({})]'.format(cursor_row.column_name, cursor_row.type_name, cursor_row.column_size))
+                col_name = re.sub('[^a-zA-Z0-9]', '_', cursor_row.column_name)
+                optimistic_col = '{} {}({})'.format(col_name, cursor_row.type_name, cursor_row.column_size)
+                if optimistic_col not in columns:
+                    columns.append(optimistic_col)
 
         try:
             populate_columns()
@@ -124,15 +126,19 @@ def mdb_to_sqlite(mdb_file):
         cols = ', '.join(columns)
 
         # create the table in SQLite
+        print(f"Creating table {t_name}...\n{cols}")
         c.execute('DROP TABLE IF EXISTS "{}"'.format(t_name))
+        print(f'Dropped table {t_name}!')
 
         try:
             c.execute('CREATE TABLE "{}" ({})'.format(t_name, cols))
-        except sqlite3.OperationalError:
-            print(f'Couldn\'t create ${t_name}')
+            print(f"Created table {t_name}!")
+        except sqlite3.OperationalError as e:
+            print(f'Couldn\'t create ${t_name}', e)
             continue
 
         # copy the data from MDB to SQLite
+        print(f"Copying data from {t.name} to {t_name}...")
         cursor.execute('SELECT * FROM "{}"'.format(t.name))
         for row in cursor:
             values = []
@@ -146,10 +152,13 @@ def mdb_to_sqlite(mdb_file):
                         value = u'{}'.format(value)
                     values.append(value)
             v = ', '.join(['?'] * len(values))
+            print(f'Appending {values} to {t_name}')
             sql = 'INSERT INTO "{}" VALUES(' + v + ')'
             c.execute(sql.format(t_name), values)
 
+    print("Committing changes to database...")
     conn.commit()
+    print("Changes committed!")
     conn.close()
 
 
