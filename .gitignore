@@ -6,3 +6,4 @@ dist
 *.spec
 
 *.mdb
+*.csv
