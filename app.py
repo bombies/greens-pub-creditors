@@ -1,25 +1,14 @@
+import csv
 import datetime
 import os
 import sys
-import sqlite3
-import openpyxl
-import pyodbc
-import re
+from multiprocessing import pool
 from tkinter import *
-from tkinter.ttk import *
 from tkinter.filedialog import askopenfile
 from tkinter.messagebox import showinfo
-from collections import namedtuple
-from multiprocessing import pool
+from tkinter.ttk import *
 
-# Creditors will be typed in the form:
-# type Creditor:
-#     Order ID: Int
-#     Creditor Name: String
-#     Amount Credited: Double
-#     Date Credited: Datetime
-#     Cashier: String
-creditorDict = {}
+import openpyxl
 
 thread_pool = pool.ThreadPool(processes=1)
 
@@ -28,19 +17,16 @@ class Process:
     def __init__(self, root, _file):
         super().__init__()
         self.pb = Progressbar(
-            root,
-            orient='horizontal',
-            mode='determinate',
-            length=200
+            root, orient="horizontal", mode="determinate", length=200
         )
         self.root = root
         self._file = _file
 
     def __progress(self, amt):
-        cur_val = self.pb['value']
+        cur_val = self.pb["value"]
         if cur_val + amt < 100:
             # update progressbar
-            self.pb['value'] += amt
+            self.pb["value"] += amt
             self.root.update_idletasks()
         else:
             # close the progressbar
@@ -52,148 +38,92 @@ class Process:
         self.pb.pack()
         self.root.update_idletasks()
 
-        mdb_to_sqlite(self._file.name)
         self.__progress(25)
 
-        database = connect_to_database("db_as_sqlite.sqlite")
         self.__progress(25)
 
-        crunch_raw_data(database)
+        crunch_raw_data("./OrderHeaders.csv", "./EmployeeFiles.csv")
         self.__progress(25)
 
         create_excel_spreadsheet(os.path.dirname(self._file.name))
         self.__progress(25)
 
+    def error(self, err):
+        print("Error occurred: {}".format(err))
+        self.pb.stop()
+        self.pb.destroy()
+        showinfo("Error", "An error occurred while processing the file.")
+
     def start(self):
-        return thread_pool.apply_async(self.run)
+        print("Starting process...")
+        return thread_pool.apply_async(self.run, error_callback=self.error)
 
 
-def mdb_to_sqlite(mdb_file):
-    cnxn = pyodbc.connect('Driver={{Microsoft Access Driver (*.mdb, *.accdb)}};Dbq={};'.format(mdb_file))
+def crunch_raw_data(orders_csv_path, employees_csv_path):
+    print("Crunching raw data from CSV files...")
 
-    cursor = cnxn.cursor()
+    # Creditors will be typed in the form:
+    # type Creditor:
+    #     Order ID: Int
+    #     Creditor Name: String
+    #     Amount Credited: Double
+    #     Date Credited: Datetime
+    #     Cashier: String
+    creditorDict = {}
 
-    conn = sqlite3.connect("db_as_sqlite.sqlite")
-    c = conn.cursor()
+    # Read all open orders from CSV
+    all_open_orders = []
+    with open(orders_csv_path, "r", newline="") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            # Only include orders with OrderStatus = 1
+            if row["OrderStatus"] == "1":
+                print(f"Processing order {row['OrderID']}...")
+                all_open_orders.append(
+                    (
+                        row["OrderID"],
+                        row["SpecificCustomerName"],
+                        float(row["AmountDue"]),
+                        row["EmployeeID"],
+                        row["OrderDateTime"],
+                        row["OrderStatus"],
+                    )
+                )
 
-    Table = namedtuple('Table', ['cat', 'schem', 'name', 'type'])
+    # Read all employees from CSV
+    all_employees = []
+    with open(employees_csv_path, "r", newline="") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            print(f"Processing employee {row['EmployeeID']}...")
+            all_employees.append(
+                (row["EmployeeID"], row["FirstName"], row["LastName"])
+            )
 
-    # get a list of tables
-    tables = []
-    for row in cursor.tables():
-        if row.table_type == 'TABLE':
-            t = Table(row.table_cat, row.table_schem, row.table_name, row.table_type)
-            tables.append(t)
-
-    for t in tables:
-        if (t.name != 'OrderHeaders' and t.name != 'EmployeeFiles'):
-            continue
-        print(t.name)
-
-        # SQLite tables must being with a character or _
-        t_name = t.name
-        if not re.match('[a-zA-Z]', t.name):
-            t_name = '_' + t_name
-
-        # get table definition
-        columns = []
-
-        def populate_columns():
-            for cursor_row in cursor.columns(table=t.name):
-                print('    {} [{}({})]'.format(cursor_row.column_name, cursor_row.type_name, cursor_row.column_size))
-                col_name = re.sub('[^a-zA-Z0-9]', '_', cursor_row.column_name)
-                optimistic_col = '{} {}({})'.format(col_name, cursor_row.type_name, cursor_row.column_size)
-                if optimistic_col not in columns:
-                    columns.append(optimistic_col)
-
-        try:
-            populate_columns()
-        except UnicodeDecodeError:
-            def decode_sketchy_utf16(raw_bytes):
-                s = raw_bytes.decode("utf-16le", "ignore")
-                try:
-                    n = s.index('\u0000')
-                    s = s[:n]  # respect null terminator
-                except ValueError:
-                    pass
-                return s
-
-            prev_converter = cnxn.get_output_converter(pyodbc.SQL_WVARCHAR)
-            cnxn.add_output_converter(pyodbc.SQL_WVARCHAR, decode_sketchy_utf16)
-            populate_columns()
-            cnxn.add_output_converter(pyodbc.SQL_WVARCHAR, prev_converter)
-
-        cols = ', '.join(columns)
-
-        # create the table in SQLite
-        print(f"Creating table {t_name}...\n{cols}")
-        c.execute('DROP TABLE IF EXISTS "{}"'.format(t_name))
-        print(f'Dropped table {t_name}!')
-
-        try:
-            c.execute('CREATE TABLE "{}" ({})'.format(t_name, cols))
-            print(f"Created table {t_name}!")
-        except sqlite3.OperationalError as e:
-            print(f'Couldn\'t create ${t_name}', e)
-            continue
-
-        # copy the data from MDB to SQLite
-        print(f"Copying data from {t.name} to {t_name}...")
-        cursor.execute('SELECT * FROM "{}"'.format(t.name))
-        for row in cursor:
-            values = []
-            for value in row:
-                if value is None:
-                    values.append(u'NULL')
-                else:
-                    if isinstance(value, bytearray):
-                        value = sqlite3.Binary(value)
-                    else:
-                        value = u'{}'.format(value)
-                    values.append(value)
-            v = ', '.join(['?'] * len(values))
-            print(f'Appending {values} to {t_name}')
-            sql = 'INSERT INTO "{}" VALUES(' + v + ')'
-            c.execute(sql.format(t_name), values)
-
-    print("Committing changes to database...")
-    conn.commit()
-    print("Changes committed!")
-    conn.close()
-
-
-def connect_to_database(database_location):
-    return sqlite3.connect(database_location)
-
-
-def crunch_raw_data(database):
-    print("Crunching raw data...")
-
-    # Parse entries into an abstract Creditor type
-    database_cursor = database.cursor()
-    all_open_orders = database_cursor.execute(
-        "SELECT OrderID, SpecificCustomerName, AmountDue, EmployeeID, OrderDateTime, OrderStatus FROM OrderHeaders where OrderStatus = 1"
-    ).fetchall()
-    all_employees = database_cursor.execute(
-        "SELECT EmployeeID, FirstName, LastName FROM EmployeeFiles"
-    ).fetchall()
-    database_cursor.close()
-    database.close()
-
-    db_path = os.path.join(os.getcwd(), "db_as_sqlite.sqlite")
-    if os.path.exists(db_path):
-        os.remove(db_path)
-    else:
-        print("The database file didn't exist at {}.".format(db_path))
-
+    # Process the data as before
     for order in all_open_orders:
+        print(f"Processing order {order}...")
         order_id = order[0]
         creditor_name = order[1]
         amount_credited = order[2]
         date = order[4]
-        employee = list(filter(lambda x: x[0] == order[3], all_employees))[0]
-        cashier = f'{employee[1]} {employee[2]}'
-        creditorDict[order_id] = (creditor_name, amount_credited, cashier, date)
+        employee = next(filter(lambda x: x[0] == order[3], all_employees), None)
+
+        if employee:
+            print(f"Found employee {employee[0]} for order {order_id}...")
+            cashier = f"{employee[1]} {employee[2]}"
+            creditorDict[order_id] = (
+                creditor_name,
+                amount_credited,
+                cashier,
+                date,
+            )
+        else:
+            print(
+                f"Warning: Employee ID {order[3]} not found for order {order_id}"
+            )
+
+    return creditorDict
 
 
 # This function turns the Creditor abstract type into a
@@ -201,8 +131,13 @@ def crunch_raw_data(database):
 # contain the OrderID, Creditor Name, Amount Credited, and
 # Cashier as columns.
 def create_excel_spreadsheet(path=""):
+    print("Crunching raw data...")
+    creditorDict = crunch_raw_data("./OrderHeaders.csv", "./EmployeeFiles.csv")
+
     print("Creating excel spreadsheet...")
-    spreadsheet_name = f"{path}/creditors-{datetime.datetime.now().strftime('%d-%m-%Y')}.xlsx"
+    spreadsheet_name = (
+        f"{path}/creditors-{datetime.datetime.now().strftime('%d-%m-%Y')}.xlsx"
+    )
 
     # Create workbook if creditors.xlsx does not exist,
     # if it does, the file will just be overwritten.
@@ -214,6 +149,7 @@ def create_excel_spreadsheet(path=""):
 
     worksheet = workbook.active
     cur_row = 1
+    print(creditorDict)
     for order_id, order_info in creditorDict.items():
         print(f"Appending order {order_id} to spreadsheet...")
 
@@ -238,12 +174,14 @@ def start_gui():
     Label(root, text="Select the database location").pack()
 
     def open_file():
-        _file = askopenfile(mode='r', filetypes=[('Microsoft Access Database', '*.mdb')])
+        _file = askopenfile(
+            mode="r", filetypes=[("Microsoft Access Database", "*.mdb")]
+        )
         if _file is not None:
             process_thread = Process(root, _file)
             process_thread.start()
 
-    btn = Button(root, text='Open', command=lambda: open_file())
+    btn = Button(root, text="Open", command=lambda: open_file())
     btn.pack(side=TOP, pady=10)
     root.mainloop()
     return root

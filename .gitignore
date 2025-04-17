@@ -4,3 +4,5 @@ dist
 
 *.xlsx
 *.spec
+
+*.mdb
